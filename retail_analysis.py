@@ -1,267 +1,182 @@
+from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 
-df =pd.read_excel(
-    "Online_Retail_Practice.xlsx",
-    sheet_name="Online Retail"
+BASE_DIR = Path(__file__).resolve().parent
+DATA_PATH = BASE_DIR / "Online_Retail_Practice.xlsx"
+
+df = pd.read_excel(DATA_PATH, sheet_name="Online Retail")
+
+required_columns = [
+    "InvoiceNo", "StockCode", "Description", "Quantity",
+    "InvoiceDate", "UnitPrice", "CustomerID", "Country"
+]
+
+df = df[required_columns].copy()
+df["Description"] = df["Description"].str.strip()
+
+print("Missing values by column:")
+print(df.isna().sum())
+
+print(f"Total rows for analysis: {len(df):,}")
+
+print(f"Rows involved in duplicates: {df.duplicated(keep=False).sum():,}")
+print(f"Extra duplicate rows: {df.duplicated().sum():,}")
+
+REMOVE_DUPLICATES = False
+
+df_all = df.drop_duplicates().copy() if REMOVE_DUPLICATES else df.copy()
+
+print(f"Rows after duplicate handling: {len(df_all):,}")
+
+df_all["Revenue"] = df_all["Quantity"] * df_all["UnitPrice"]
+
+df_all["TransactionType"] = "Unclassified"
+
+bad_debt_mask = (
+        df_all["Description"].eq("Adjust bad debt") &
+        (df_all["UnitPrice"] < 0)
 )
 
-print(df.head())
-print(df.shape)
-print(df.isnull().sum())
+df_all.loc[bad_debt_mask, "TransactionType"] = "Bad debt"
 
-df = df.drop(columns=['Unnamed: 8','revenue','Total revenue'])
-print(df.shape)
-print(df.isnull().sum())
+df_all.loc[df_all["UnitPrice"] == 0, "TransactionType"] = "Zero-price"
+
+non_product_codes = [
+    "DOT", "POST", "M", "D", "BANK CHARGES",
+    "AMAZONFEE", "CRUK", "C2", "B"
+]
+
+df_all.loc[
+    df_all["StockCode"].isin(non_product_codes) &
+    df_all["TransactionType"].eq("Unclassified"),
+    "TransactionType"
+] = "Non-product"
+
+cancellation_mask = (
+    df_all["InvoiceNo"].astype(str).str.startswith("C") &
+    (df_all["UnitPrice"] > 0) &
+    df_all["TransactionType"].eq("Unclassified")
+)
+
+df_all.loc[cancellation_mask, "TransactionType"] = "Cancellation"
+
+product_sales_mask = (
+        df_all["TransactionType"].eq("Unclassified") &
+        (df_all["Quantity"] > 0) &
+        (df_all["UnitPrice"] > 0)
+)
+
+df_all.loc[product_sales_mask, "TransactionType"] = "Product sale"
+
+print("\nTransaction type counts:")
+print(df_all["TransactionType"].value_counts())
+
+def calculate_metrics(data):
+    by_type = data.groupby("TransactionType")["Revenue"].sum()
+
+    return {
+        "Product sales": by_type.get("Product sale", 0),
+        "Cancellation": -by_type.get("Cancellation", 0),
+        "Non-product (net)": by_type.get("Non-product", 0),
+        "Bad debt": by_type.get("Bad debt", 0),
+        "Transaction total": data["Revenue"].sum()
+    }
 
 while True:
-    try:
-        rows= int(input("How many rows do you want to research:"))
+    country = input("Which country do you want to analyze? ").strip()
 
-        if rows >0:
-            break
-        print("please enter a positive integer")
+    df_country = df_all[
+        df_all["Country"].str.strip().str.lower() == country.lower()
+    ]
 
-    except ValueError:
-        print("the entered value is wrong, please enter a positive integer")
-
-df = df.head(rows).copy()
-print(f"Rows selected for analysis: {len(df)}")
-print('number of duplication rows:')
-print(df.duplicated(keep=False).sum())
-
-duplicates = df[df.duplicated(keep=False)]
-print(duplicates.head(rows))
-
-#choose whether delate
-while True:
-    option = input('do you want to remove the duplicate rows?(y/n): ').strip().lower()
-
-    if option == 'y' or option == 'n':
+    if not df_country.empty:
         break
 
-    print('Your option is invalid. Please enter y or n.')
+    print("Country not found. Please try again.")
 
-if option == 'y':
-    df_remove = df.drop_duplicates().copy()
-else:
-    df_remove = df.copy()
-print(f'row after section is {len(df_remove)}')
+print(f"Total rows for selected country: {len(df_country):,}")
 
+country_name = df_country["Country"].iloc[0]
 
-#choose what they want
-df_remove["Revenue"] = df_remove["Quantity"] * df_remove["UnitPrice"]
-while True:
-    country = (input("which country do you want search：")).strip()
-    result = df_remove[
-        df_remove["Country"].str.title() == country.title()
-    ]
+metrics = pd.DataFrame({
+    "Overall": calculate_metrics(df_all),
+    country_name: calculate_metrics(df_country)
+}).T
 
-    if not result.empty:
-        break
+metrics["Net product sales"] = (
+    metrics["Product sales"] - metrics["Cancellation"]
+)
 
-    print(f'country: {country} is unavailable, please enter another country.')
+metrics["Check"] = (
+    metrics["Net product sales"]
+    + metrics["Non-product (net)"]
+    + metrics["Bad debt"]
+    - metrics["Transaction total"]
+)
 
-#word input fix
+metrics["Cancellation amount ratio (%)"] = (
+    metrics["Cancellation"] / metrics["Product sales"] * 100
+)
 
-if result.empty:
-    print("Country not found")
-else:
-    print(result.head(rows))
-    print(f'total search result {len(result)}')
+metrics["Share of overall product sales (%)"] = (
+    metrics["Product sales"] /
+    metrics.loc["Overall", "Product sales"] * 100
+)
 
-    total_revenue = result["Revenue"].sum()
-    print(f'total revenue: {total_revenue:,.3f}')
+assert metrics["Check"].abs().lt(0.01).all(), "Revenue reconciliation failed"
 
-    unique_invoices = result["InvoiceNo"].nunique()
-    print(f'unique invoices: {unique_invoices}')
+print(metrics.T.round(2))
 
-    if unique_invoices > 0:
-        average_invoices_value = total_revenue / unique_invoices
-        print(f"Average Invoice Value: £{average_invoices_value:,.2f}")
-    else:
-        print("Average Invoice Value unavailable: no valid invoices.")
+FIGURES_DIR = BASE_DIR / "figures"
+FIGURES_DIR.mkdir(exist_ok=True)
 
-    negative_records = df_remove[df_remove['Quantity']<0]
-    print(f"negative_quantity records:{len(negative_records)}")
-    print(negative_records.head(rows))
-
-    sales = df_remove[
-        (df_remove ['Quantity']>0) &
-        (df_remove ['UnitPrice']>0)
-    ]
-
-    print(sales.head(rows))
-
-    total_units_number = sales["Quantity"].sum()
-    print(f'total_units_number is: {total_units_number:,.3f}')
-
-    gross_sales = sales["Revenue"].sum()
-    print(f"Gross_sales is:{gross_sales:,.3f}")
-
-    returns = df_remove[
-        (df_remove['Quantity']<0) &
-        (df_remove['UnitPrice']>0)
-    ]
-
-    returns_amount = abs(returns["Revenue"].sum())
-    print(f'returns_amount is:{returns_amount:,.3f}')
-
-    net_revenue = gross_sales - returns_amount
-    print(f'net_revenue is:{net_revenue:,.3f}')
-
-    check_revenue = df_remove["Revenue"].sum()
-    print(f'check_revenue is:{check_revenue:,.3f}')
-
-    adjusting_different = abs(net_revenue - check_revenue)
-    print(f'adjusting_different is:{adjusting_different:,.3f}')
-
-    if adjusting_different <= 0.001:
-        print('Pass:the net_revenue available')
-    else:
-        print('False:the net_revenue need to check')
-        negative_price = df_remove[df_remove['UnitPrice']<0] #negative_price means the count didn't satisfy any condition before
-        negative_price_amount = abs(negative_price["Revenue"].sum())
-        print(f'the special negative_price_amount is{negative_price_amount:,.3f}')
-
-        print(negative_price[["InvoiceNo", "Description", "Quantity", "UnitPrice", "Revenue"]])
-
-        adjustment = negative_price["Revenue"].sum()
-
-        if abs(net_revenue + adjustment - check_revenue) <= 0.001:
-            print('Pass:Revenue difference explained')
-        else:
-            print('False:Unexplained difference remains')
-
-    bad_debt_records = df_remove[
-        df_remove["Description"].eq("Adjust bad debt") &
-        (df_remove["UnitPrice"] < 0)
-        ]
-
-    bad_debt = bad_debt_records["Revenue"].sum()
-    print(f"Bad Debt Adjustment: £{bad_debt:,.3f}")
-
-    total_net_transaction_amount = check_revenue
-    print(f"Total Net Transaction Amount: £{total_net_transaction_amount:,.3f}")
-
-    cancellation_stuff = df_remove[
-        df_remove["InvoiceNo"].astype(str).str.startswith("C")
-    ]
-    print(f"Cancellation Records: {len(cancellation_stuff)}")
-    print(cancellation_stuff.head(rows))
-
-    all_negative = (cancellation_stuff["Quantity"] < 0).all()
-    print(f"All cancellations have negative quantity: {all_negative}")
-
-    other_negative = df_remove[
-       (df_remove["Quantity"] < 0) &
-       (~df_remove["InvoiceNo"].astype(str).str.startswith("C"))
-    ]
-    all_zero_price = (other_negative["UnitPrice"] == 0).all()
-    print(f"All other negative records have zero price: {all_zero_price}")
-
-    while True:
-        chart_option = input(
-            "Choose chart analysis: A = Overall, B = Selected Country: "
-        ).strip().lower()
-
-        if chart_option == "a" or chart_option == "b":
-            break
-
-        print("Invalid option. Please enter A or B.")
-
-    if chart_option == "a":
-        chart_data = df_remove
-    else:
-        chart_data = result
-
-    country_sales = chart_data.groupby("Country")["Revenue"].sum()
-    country_ranking = country_sales.sort_values(ascending=False)
-
-    print(country_ranking.head(rows))
-
-    product_sales = chart_data[
-        (chart_data["Quantity"] > 0) &
-        (chart_data["UnitPrice"] > 0)
-        ].groupby("Description")["Revenue"].sum()
-    product_ranking = product_sales.sort_values(ascending=False)
-
-    print(product_ranking.head(rows))
-
-    # Chart 1: Countries by Net Transaction Amount
-
-    top_countries = country_ranking.head(10)
-
-    plt.figure(figsize=(12, 6))
-
-    plt.bar(
-        top_countries.index,
-        top_countries.values
-    )
-
-    if chart_option == "a":
-        plt.title(f"Top {len(top_countries)} Countries by Net Transaction Amount")
-    else:
-        plt.title(f"Net Transaction Amount - {country.title()}")
-
-    plt.xlabel("Country")
-    plt.ylabel("Net Transaction Amount (£)")
-
-    plt.xticks(rotation=45, ha="right")
+def save_top10(data, title, xlabel, filename):
+    top10 = data.nlargest(10).sort_values()
+    ax = top10.plot.barh(figsize=(10, 6))
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("")
     plt.tight_layout()
+    plt.savefig(FIGURES_DIR / filename, dpi=200)
+    plt.close()
 
-    plt.savefig(
-        f"country_sales_{chart_option}_{country.lower().replace(' ', '_')}_{len(df)}.png",
-        dpi=300
-    )
-    plt.show()
+products = df_all[
+    df_all["TransactionType"].isin(["Product sale", "Cancellation"])
+]
 
-    print("Country sales chart saved successfully!")
+country_sales = products.groupby("Country")["Revenue"].sum()
+country_share = country_sales / country_sales.sum() * 100
 
-    # Chart 2: Products by Gross Revenue
+non_uk = country_sales.drop("United Kingdom", errors="ignore")
+non_uk_share = non_uk / non_uk.sum() * 100
 
-    top_products = product_ranking.head(10)
+overall_products = products.groupby("Description")["Revenue"].sum()
 
-    plt.figure(figsize=(12, 7))
+selected_products = df_country[
+    df_country["TransactionType"].isin(["Product sale", "Cancellation"])
+].groupby("Description")["Revenue"].sum()
 
-    plt.barh(
-        top_products.index[::-1],
-        top_products.values[::-1]
-    )
+save_top10(
+    country_share, "Country Sales Share",
+    "Share (%)", "country_share.png"
+)
 
-    if chart_option == "a":
-        plt.title(f"Top {len(top_products)} Products by Gross Revenue - Overall")
-    else:
-        plt.title(f"Top {len(top_products)} Products by Gross Revenue - {country.title()}")
+save_top10(
+    non_uk_share, "Sales Share Excluding UK",
+    "Share among non-UK countries (%)", "country_share_ex_uk.png"
+)
 
-    plt.xlabel("Gross Revenue (£)")
-    plt.ylabel("Product")
+save_top10(
+    overall_products, "Top Products - Overall",
+    "Gross Product Sales (£)", "products_overall.png"
+)
 
-    plt.tight_layout()
+save_top10(
+    selected_products, f"Top Products - {country_name}",
+    "Gross Product Sales (£)",
+    f"products_{country_name.lower().replace(' ', '_')}.png"
+)
 
-    plt.savefig(
-        f"product_sales_{chart_option}_{country.lower().replace(' ', '_')}_{len(df)}.png",
-        dpi=300
-    )
-    plt.show()
-
-    print("Product sales chart saved successfully!")
-
-    # PROJECT COMPLETION MESSAGE
-
-    print("\n===================================")
-    print("ONLINE RETAIL DATA ANALYSIS")
-    print("===================================")
-
-    print("Data processing completed.")
-    print("Sales analysis completed.")
-    print("Country ranking completed.")
-    print("Product ranking completed.")
-    print("Visualizations saved successfully.")
-
-    print("===================================")
-
-
-
-
-
+print("Analysis complete.")
+print("Charts saved to figures/")
