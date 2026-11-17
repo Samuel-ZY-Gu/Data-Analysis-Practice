@@ -1,6 +1,9 @@
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
+from sales_trends import run_sales_trends
+from customer_segmentation import run_customer_segmentation
+from country_comparison import compare_country_segments
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_PATH = BASE_DIR / "Online_Retail_Practice.xlsx"
@@ -133,6 +136,8 @@ FIGURES_DIR.mkdir(exist_ok=True)
 
 def save_top10(data, title, xlabel, filename):
     top10 = data.nlargest(10).sort_values()
+    if top10.empty:
+        return
     ax = top10.plot.barh(figsize=(10, 6))
     ax.set_title(title)
     ax.set_xlabel(xlabel)
@@ -169,14 +174,22 @@ save_top10(
 
 save_top10(
     overall_products, "Top Products - Overall",
-    "Gross Product Sales (£)", "products_overall.png"
+    "Net Product Sales (£)", "products_overall.png"
 )
 
 save_top10(
     selected_products, f"Top Products - {country_name}",
-    "Gross Product Sales (£)",
+    "Net Product Sales (£)",
     f"products_{country_name.lower().replace(' ', '_')}.png"
 )
+
+run_sales_trends(
+    df_all, df_country, FIGURES_DIR,
+    metrics.loc["Overall", "Net product sales"],
+)
+
+rfm = run_customer_segmentation(df_all, FIGURES_DIR)
+compare_country_segments(rfm, df_country, country_name)
 
 print("Analysis complete.")
 print("Charts saved to figures/")
